@@ -17,9 +17,8 @@
 package com.baidu.brpc.client.endpoint;
 
 import com.baidu.brpc.client.RpcClient;
+import com.baidu.brpc.client.channel.BrpcChannelFactory;
 import com.baidu.brpc.client.channel.BrpcChannelGroup;
-import com.baidu.brpc.client.channel.BrpcPooledChannel;
-import com.baidu.brpc.client.channel.BrpcSingleChannel;
 
 import java.util.Collection;
 import java.util.List;
@@ -43,11 +42,7 @@ public class BasicEndPointProcessor implements EndPointProcessor {
         for (EndPoint endPoint : addList) {
             if (!endPoints.contains(endPoint)) {
                 endPoints.add(endPoint);
-                if (rpcClient.getRpcClientOptions().isLongConnection()) {
-                    instances.add(new BrpcPooledChannel(endPoint.getIp(), endPoint.getPort(), rpcClient));
-                } else {
-                    instances.add(new BrpcSingleChannel(endPoint.getIp(), endPoint.getPort(), rpcClient));
-                }
+                instances.add(BrpcChannelFactory.createChannelGroup(endPoint.getIp(), endPoint.getPort(), rpcClient));
             }
         }
     }
