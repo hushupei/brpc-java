@@ -18,15 +18,16 @@ package com.baidu.brpc.example.standard;
 
 import com.baidu.brpc.client.BrpcProxy;
 import com.baidu.brpc.client.RpcCallback;
+import com.baidu.brpc.client.RpcCallbackAdaptor;
 import com.baidu.brpc.client.RpcClient;
 import com.baidu.brpc.client.RpcClientOptions;
 import com.baidu.brpc.client.loadbalance.LoadBalanceType;
 import com.baidu.brpc.example.interceptor.CustomInterceptor;
 import com.baidu.brpc.exceptions.RpcException;
 import com.baidu.brpc.interceptor.Interceptor;
+import com.baidu.brpc.naming.zookeeper.ZookeeperNamingFactory;
 import com.baidu.brpc.protocol.Options;
-import com.baidu.brpc.protocol.RpcContext;
-import io.netty.util.ReferenceCountUtil;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +38,7 @@ import java.util.concurrent.TimeUnit;
  * Created by wenweihu86 on 2017/4/26.
  */
 @SuppressWarnings("unchecked")
+@Slf4j
 public class RpcClientTest {
 
     public static void main(String[] args) {
@@ -55,49 +57,36 @@ public class RpcClientTest {
             serviceUrl = args[0];
         }
 
-        List<Interceptor> interceptors = new ArrayList<Interceptor>();
-        interceptors.add(new CustomInterceptor());
-        RpcClient rpcClient = new RpcClient(serviceUrl, clientOption, interceptors);
-//        RpcClient rpcClient = new RpcClient(serviceUrl, clientOption, interceptors, new ZookeeperNamingFactory());
-
         // build request
         Echo.EchoRequest request = Echo.EchoRequest.newBuilder()
                 .setMessage("helloooooooooooo")
                 .build();
 
+        List<Interceptor> interceptors = new ArrayList<Interceptor>();
+        interceptors.add(new CustomInterceptor());
+
         // sync call
+        RpcClient rpcClient = new RpcClient(serviceUrl, clientOption, interceptors);
+//        RpcClient rpcClient = new RpcClient(serviceUrl, clientOption, interceptors, new ZookeeperNamingFactory());
         EchoService echoService = BrpcProxy.getProxy(rpcClient, EchoService.class);
         try {
-            RpcContext.getContext().setRequestBinaryAttachment("example attachment".getBytes());
             Echo.EchoResponse response = echoService.echo(request);
             System.out.printf("sync call service=EchoService.echo success, "
                             + "request=%s,response=%s\n",
                     request.getMessage(), response.getMessage());
-            if (RpcContext.getContext().getResponseBinaryAttachment() != null) {
-                System.out.println("attachment="
-                        + new String(RpcContext.getContext().getResponseBinaryAttachment().array()));
-                ReferenceCountUtil.release(RpcContext.getContext().getResponseBinaryAttachment());
-            }
         } catch (RpcException ex) {
-            System.out.println("sync call failed, ex=" + ex.getMessage());
-        } finally {
-            RpcContext.removeContext();
+            log.warn("sync call failed, ex=", ex);
         }
         rpcClient.stop();
 
         // async call
         rpcClient = new RpcClient(serviceUrl, clientOption, interceptors);
 //        rpcClient = new RpcClient(serviceUrl, clientOption, interceptors, new ZookeeperNamingFactory());
-        RpcCallback callback = new RpcCallback<Echo.EchoResponse>() {
+        RpcCallback callback = new RpcCallbackAdaptor<Echo.EchoResponse>() {
             @Override
             public void success(Echo.EchoResponse response) {
                 System.out.printf("async call EchoService.echo success, response=%s\n",
                         response.getMessage());
-                if (RpcContext.getContext().getResponseBinaryAttachment() != null) {
-                    System.out.println("attachment="
-                            + new String(RpcContext.getContext().getResponseBinaryAttachment().array()));
-                    ReferenceCountUtil.release(RpcContext.getContext().getResponseBinaryAttachment());
-                }
             }
 
             @Override
@@ -107,18 +96,15 @@ public class RpcClientTest {
         };
         EchoServiceAsync asyncEchoService = BrpcProxy.getProxy(rpcClient, EchoServiceAsync.class);
         try {
-            RpcContext.getContext().setRequestBinaryAttachment("async example attachment".getBytes());
             Future<Echo.EchoResponse> future = asyncEchoService.echo(request, callback);
             try {
-                Echo.EchoResponse response = future.get(100, TimeUnit.MILLISECONDS);
+                Echo.EchoResponse response = future.get(1000, TimeUnit.MILLISECONDS);
                 System.out.println("response from future:" + response.getMessage());
             } catch (Exception ex1) {
                 ex1.printStackTrace();
             }
         } catch (RpcException ex) {
             System.out.println("rpc send failed, ex=" + ex.getMessage());
-        } finally {
-            RpcContext.getContext().removeContext();
         }
         rpcClient.stop();
     }

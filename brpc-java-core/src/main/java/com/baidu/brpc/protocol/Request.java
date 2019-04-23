@@ -19,9 +19,11 @@ package com.baidu.brpc.protocol;
 import java.lang.reflect.Method;
 import java.util.Map;
 
+import com.baidu.brpc.Controller;
 import com.baidu.brpc.RpcMethodInfo;
+import com.baidu.brpc.client.RpcCallback;
 import com.baidu.brpc.exceptions.RpcException;
-import com.baidu.brpc.protocol.nshead.NSHeadMeta;
+import com.baidu.brpc.protocol.nshead.NSHead;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -89,13 +91,13 @@ public interface Request {
 
     void setChannel(Channel channel);
 
-    NSHeadMeta getNsHeadMeta();
+    NSHead getNsHead();
 
-    void setNsHeadMeta(NSHeadMeta nsHeadMeta);
+    void setNsHead(NSHead nsHead);
 
-    Request addRefCnt();
+    Request retain();
 
-    void delRefCnt();
+    void release();
 
     void reset();
 
@@ -103,4 +105,23 @@ public interface Request {
 
     void setAuth(String auth);
 
+    Long getTraceId();
+
+    void setTraceId(Long traceId);
+
+    Long getSpanId();
+
+    void setSpanId(Long spanId);
+
+    Long getParentSpanId();
+
+    void setParentSpanId(Long parentSpanId);
+
+    Controller getController();
+
+    void setController(Controller controller);
+
+    RpcCallback getCallback();
+
+    void setCallback(RpcCallback callback);
 }

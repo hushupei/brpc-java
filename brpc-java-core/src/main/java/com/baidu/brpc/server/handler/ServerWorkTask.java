@@ -16,18 +16,26 @@
 
 package com.baidu.brpc.server.handler;
 
+import static io.netty.handler.codec.http.HttpHeaderNames.CONNECTION;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
+import static io.netty.handler.codec.http.HttpResponseStatus.OK;
+import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+
+import java.lang.reflect.InvocationTargetException;
+
+import com.baidu.brpc.Controller;
 import com.baidu.brpc.exceptions.RpcException;
-import com.baidu.brpc.interceptor.Interceptor;
-import com.baidu.brpc.interceptor.JoinPoint;
+import com.baidu.brpc.interceptor.DefaultInterceptorChain;
+import com.baidu.brpc.interceptor.InterceptorChain;
 import com.baidu.brpc.protocol.Protocol;
 import com.baidu.brpc.protocol.Request;
 import com.baidu.brpc.protocol.Response;
-import com.baidu.brpc.protocol.RpcContext;
+import com.baidu.brpc.protocol.http.BrpcHttpResponseEncoder;
 import com.baidu.brpc.protocol.http.HttpRpcProtocol;
 import com.baidu.brpc.server.RpcServer;
-import com.baidu.brpc.server.ServerJoinPoint;
 import com.baidu.brpc.server.ServerStatus;
-import com.baidu.brpc.utils.CollectionUtils;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
@@ -44,14 +52,6 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
-import java.lang.reflect.InvocationTargetException;
-
-import static io.netty.handler.codec.http.HttpHeaderNames.CONNECTION;
-import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
-import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
-import static io.netty.handler.codec.http.HttpResponseStatus.OK;
-import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
-
 @Slf4j
 @Setter
 @Getter
@@ -64,28 +64,26 @@ public class ServerWorkTask implements Runnable {
 
     @Override
     public void run() {
-
-        Request request;
-        Response response = protocol.getResponse();
-
         if (protocol instanceof HttpRpcProtocol) {
             FullHttpRequest fullHttpRequest = (FullHttpRequest) packet;
-            if (fullHttpRequest.uri().equals("/favicon.ico")) {
-                FullHttpResponse fullHttpResponse =
-                        new DefaultFullHttpResponse(HTTP_1_1, OK);
-                fullHttpResponse.headers().set(CONTENT_LENGTH, 0);
-                if (HttpUtil.isKeepAlive(fullHttpRequest)) {
-                    fullHttpResponse.headers().set(CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-                }
-                ChannelFuture f = ctx.channel().writeAndFlush(fullHttpResponse);
-                if (!HttpUtil.isKeepAlive(fullHttpRequest)) {
-                    f.addListener(ChannelFutureListener.CLOSE);
-                }
-                return;
-            }
-            if (fullHttpRequest.uri().equals("/") || fullHttpRequest.uri().equals("/status")) {
-                ServerStatus serverStatus = rpcServer.getServerStatus();
-                try {
+            try {
+                if (fullHttpRequest.uri().equals("/favicon.ico")) {
+                    FullHttpResponse fullHttpResponse =
+                            new DefaultFullHttpResponse(HTTP_1_1, OK);
+                    fullHttpResponse.headers().set(CONTENT_LENGTH, 0);
+                    if (HttpUtil.isKeepAlive(fullHttpRequest)) {
+                        fullHttpResponse.headers().set(CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                    }
+                    BrpcHttpResponseEncoder encoder = new BrpcHttpResponseEncoder();
+                    ByteBuf responseByteBuf = encoder.encode(fullHttpResponse);
+                    ChannelFuture f = ctx.channel().writeAndFlush(responseByteBuf);
+                    if (!HttpUtil.isKeepAlive(fullHttpRequest)) {
+                        f.addListener(ChannelFutureListener.CLOSE);
+                    }
+                    return;
+                } else if (fullHttpRequest.uri().equals("/") || fullHttpRequest.uri().equals("/status")) {
+                    ServerStatus serverStatus = rpcServer.getServerStatus();
+
                     byte[] statusBytes = serverStatus.toString().getBytes("UTF-8");
                     FullHttpResponse fullHttpResponse =
                             new DefaultFullHttpResponse(HTTP_1_1, OK, Unpooled.wrappedBuffer(statusBytes));
@@ -94,94 +92,81 @@ public class ServerWorkTask implements Runnable {
                     if (HttpUtil.isKeepAlive(fullHttpRequest)) {
                         fullHttpResponse.headers().set(CONNECTION, HttpHeaders.Values.KEEP_ALIVE);
                     }
-                    ChannelFuture f = ctx.channel().writeAndFlush(fullHttpResponse);
+                    BrpcHttpResponseEncoder encoder = new BrpcHttpResponseEncoder();
+                    ByteBuf responseByteBuf = encoder.encode(fullHttpResponse);
+                    ChannelFuture f = ctx.channel().writeAndFlush(responseByteBuf);
                     if (!HttpUtil.isKeepAlive(fullHttpRequest)) {
                         f.addListener(ChannelFutureListener.CLOSE);
                     }
-                } catch (Exception ex) {
-                    log.warn("send status info response failed:", ex);
+                    return;
                 }
-                return;
+            } catch (Exception ex) {
+                log.warn("send status info response failed:", ex);
             }
         }
 
+        Request request = null;
+        Controller controller = null;
+        Response response = protocol.getResponse();
         try {
             request = protocol.decodeRequest(packet);
         } catch (Exception ex) {
             // throw request
             log.warn("decode request failed:", ex);
-            request = protocol.createRequest();
-            request.setException(new RpcException(ex));
+            response.setException(new RpcException(ex));
         }
 
-        request.setChannel(ctx.channel());
-        RpcContext rpcContext = RpcContext.getContext();
-
-        try {
-            rpcContext.setRemoteAddress(ctx.channel().remoteAddress());
-            ByteBuf binaryAttachment = request.getBinaryAttachment();
-            if (binaryAttachment != null) {
-                rpcContext.setRequestBinaryAttachment(binaryAttachment);
+        if (request != null) {
+            request.setChannel(ctx.channel());
+            if (request.getRpcMethodInfo().isIncludeController()
+                    || request.getBinaryAttachment() != null
+                    || request.getKvAttachment() != null) {
+                controller = new Controller();
+                if (request.getBinaryAttachment() != null) {
+                    controller.setRequestBinaryAttachment(request.getBinaryAttachment());
+                }
+                if (request.getKvAttachment() != null) {
+                    controller.setRequestKvAttachment(request.getKvAttachment());
+                }
+                controller.setRemoteAddress(ctx.channel().remoteAddress());
+                request.setController(controller);
             }
 
             response.setLogId(request.getLogId());
             response.setCompressType(request.getCompressType());
             response.setException(request.getException());
             response.setRpcMethodInfo(request.getRpcMethodInfo());
+        }
 
-            // 处理请求前拦截
-            if (response.getException() == null
-                    && CollectionUtils.isNotEmpty(rpcServer.getInterceptors())) {
-                for (Interceptor interceptor : rpcServer.getInterceptors()) {
-                    if (!interceptor.handleRequest(request)) {
-                        response.setException(new RpcException(
-                                RpcException.FORBIDDEN_EXCEPTION, "intercepted"));
-                        break;
-                    }
-                }
-            }
-
-            if (response.getException() == null) {
-                try {
-                    JoinPoint joinPoint = new ServerJoinPoint(request, rpcServer);
-                    Object result = joinPoint.proceed();
-                    response.setResult(result);
-                    if (rpcContext.getResponseBinaryAttachment() != null
-                            && rpcContext.getResponseBinaryAttachment().isReadable()) {
-                        response.setBinaryAttachment(rpcContext.getResponseBinaryAttachment());
-                    }
-                } catch (InvocationTargetException ex) {
-                    Throwable targetException = ex.getTargetException();
-                    if (targetException == null) {
-                        targetException = ex;
-                    }
-                    String errorMsg = String.format("invoke method failed, msg=%s", targetException.getMessage());
-                    log.warn(errorMsg, targetException);
-                    response.setException(targetException);
-                } catch (Exception ex) {
-                    String errorMsg = String.format("invoke method failed, msg=%s", ex.getMessage());
-                    log.warn(errorMsg, ex);
-                    response.setException(ex);
-                }
-            }
-
-            // 处理响应后拦截
-            if (CollectionUtils.isNotEmpty(rpcServer.getInterceptors())) {
-                int length = rpcServer.getInterceptors().size();
-                for (int i = length - 1; i >= 0; i--) {
-                    rpcServer.getInterceptors().get(i).handleResponse(response);
-                }
-            }
-
+        if (response.getException() == null) {
             try {
-                ByteBuf byteBuf = protocol.encodeResponse(request, response);
-                ChannelFuture channelFuture = ctx.channel().writeAndFlush(byteBuf);
-                protocol.afterResponseSent(request, response, channelFuture);
-            } catch (Exception ex) {
-                log.warn("send response failed:", ex);
+                InterceptorChain interceptorChain = new DefaultInterceptorChain(rpcServer.getInterceptors());
+                interceptorChain.intercept(request, response);
+                if (controller != null && controller.getResponseBinaryAttachment() != null
+                        && controller.getResponseBinaryAttachment().isReadable()) {
+                    response.setBinaryAttachment(controller.getResponseBinaryAttachment());
+                }
+            } catch (InvocationTargetException ex) {
+                Throwable targetException = ex.getTargetException();
+                if (targetException == null) {
+                    targetException = ex;
+                }
+                String errorMsg = String.format("invoke method failed, msg=%s", targetException.getMessage());
+                log.warn(errorMsg, targetException);
+                response.setException(targetException);
+            } catch (Throwable ex) {
+                String errorMsg = String.format("invoke method failed, msg=%s", ex.getMessage());
+                log.warn(errorMsg, ex);
+                response.setException(ex);
             }
-        } finally {
-            rpcContext.reset();
+        }
+
+        try {
+            ByteBuf byteBuf = protocol.encodeResponse(request, response);
+            ChannelFuture channelFuture = ctx.channel().writeAndFlush(byteBuf);
+            protocol.afterResponseSent(request, response, channelFuture);
+        } catch (Exception ex) {
+            log.warn("send response failed:", ex);
         }
     }
 }
